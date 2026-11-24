@@ -64,7 +64,9 @@ market = st.sidebar.selectbox(
     "Market", list(eng.PROFILES), format_func=lambda m: eng.PROFILES[m]["label"],
     help="Ireland = Ireland-domiciled UCITS ETFs/ETCs on the London Stock Exchange, "
          "converted to USD. Often used by non-US investors (lower US dividend withholding, "
-         "no US estate-tax exposure). India = NSE-listed ETFs in INR, one category per sector.")
+         "no US estate-tax exposure). India = NSE-listed sector ETFs in INR, one category per sector. "
+         "India index = broad-market, size (large/mid/small) and factor ETFs (momentum, low-vol, quality, value), "
+         "benchmarked to the Nifty 500 index.")
 eng.set_profile(market)
 st.session_state.runs = st.session_state.runs_by_market.setdefault(market, {})
 
@@ -138,7 +140,7 @@ start = c1.date_input("Start", value=pd.Timestamp(eng.PROFILES[market]["default_
                       min_value=date(2006, 1, 1), max_value=last_day, key=f"start_{market}")
 end = c2.date_input("End", value=last_day, min_value=date(2007, 1, 1), max_value=last_day)
 capital = sb.number_input(f"Capital ({eng.CCY})", min_value=1000,
-                          value=1_000_000 if market == "india" else 100_000, step=10_000, key=f"cap_{market}")
+                          value=1_000_000 if market.startswith("india") else 100_000, step=10_000, key=f"cap_{market}")
 
 sb.subheader("Portfolio")
 c1, c2 = sb.columns(2)
@@ -173,8 +175,8 @@ entry_cond = sb.selectbox("Entry condition", list(eng.ENTRY_CONDITIONS),
 use_retr = sb.checkbox("Within X% of 52-week high", value=True)
 retr = sb.slider("Retracement limit (%)", 5, 50, 20, disabled=not use_retr)
 c1, c2 = sb.columns([1, 2])
-use_rs = c1.checkbox(f"RS vs {eng.BENCHMARK}", value=True,
-                     help=f"Relative strength: ETF price divided by {eng.BENCHMARK} (S&P 500).")
+use_rs = c1.checkbox(f"RS vs {eng.bench_name()}", value=True,
+                     help=f"Relative strength: ETF price divided by the benchmark ({eng.bench_name()}).")
 rs_rule = c2.selectbox("RS rule", list(eng.RS_RULES), disabled=not use_rs, label_visibility="collapsed")
 
 sb.subheader("Exits & costs")
@@ -305,7 +307,7 @@ if run_clicked:
 # Main area
 # --------------------------------------------------------------------------
 st.title("📈 ETF Momentum Lab")
-st.caption(f"Market: **{eng.PROFILES[market]['label']}** · benchmark {eng.BENCHMARK} · cash {eng.CASH_ETF}"
+st.caption(f"Market: **{eng.PROFILES[market]['label']}** · benchmark {eng.bench_name()} · cash {eng.CASH_ETF}"
            + (" · prices converted to USD" if eng.TO_USD else ""))
 
 view = st.radio("View", ["📊 Backtest", "📈 Sector comparison", "🌍 Global markets", "🇮🇳 India ETF explorer"],
@@ -841,9 +843,9 @@ tab_over, tab_ret, tab_trd, tab_reb, tab_sig, tab_cmp = st.tabs(
 with tab_over:
     spy = R["bm_stats"].get(eng.bench_label(), {})
     k = st.columns(6)
-    k[0].metric("CAGR", pct(s["CAGR"]), f"{(s['CAGR'] - spy.get('CAGR', np.nan)) * 100:+.2f} pts vs {eng.BENCHMARK}" if spy else None)
-    k[1].metric("Max drawdown", pct(s["MaxDD"]), f"{eng.BENCHMARK} {pct(spy.get('MaxDD'))}" if spy else None, delta_color="off")
-    k[2].metric("Sharpe", f"{s['Sharpe']:.2f}", f"{eng.BENCHMARK} {spy.get('Sharpe', np.nan):.2f}" if spy else None, delta_color="off")
+    k[0].metric("CAGR", pct(s["CAGR"]), f"{(s['CAGR'] - spy.get('CAGR', np.nan)) * 100:+.2f} pts vs {eng.bench_name()}" if spy else None)
+    k[1].metric("Max drawdown", pct(s["MaxDD"]), f"{eng.bench_name()} {pct(spy.get('MaxDD'))}" if spy else None, delta_color="off")
+    k[2].metric("Sharpe", f"{s['Sharpe']:.2f}", f"{eng.bench_name()} {spy.get('Sharpe', np.nan):.2f}" if spy else None, delta_color="off")
     k[3].metric("Final value", f"{eng.CCY}{eq['Equity'].iloc[-1]:,.0f}", f"from {eng.CCY}{c.capital:,.0f}", delta_color="off")
     wins = (trades.PnL > 0).mean() if len(trades) else np.nan
     k[4].metric("Trades", f"{len(trades)}", f"win rate {pct(wins, 1)}", delta_color="off")
@@ -889,7 +891,7 @@ with tab_ret:
     fig.update_yaxes(dtick=1)
     st.plotly_chart(fig, width='stretch')
 
-    st.subheader(f"Yearly returns vs {eng.BENCHMARK} (%)")
+    st.subheader(f"Yearly returns vs {eng.bench_name()} (%)")
     yd = pd.DataFrame({"Strategy": yr})
     if eng.bench_label() in R["bm"]:
         yd[eng.BENCHMARK] = eng.monthly_table(R["bm"][eng.bench_label()])["Year Total"]
