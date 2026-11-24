@@ -310,7 +310,8 @@ st.title("📈 ETF Momentum Lab")
 st.caption(f"Market: **{eng.PROFILES[market]['label']}** · benchmark {eng.bench_name()} · cash {eng.CASH_ETF}"
            + (" · prices converted to USD" if eng.TO_USD else ""))
 
-view = st.radio("View", ["📊 Backtest", "📈 Sector comparison", "🌍 Global markets", "🇮🇳 India ETF explorer"],
+view = st.radio("View", ["📊 Backtest", "📈 Sector comparison", "🌍 Global markets", "🇮🇳 India ETF explorer",
+                        "📰 Market news"],
                 horizontal=True,
                 label_visibility="collapsed", key="view")
 
@@ -365,6 +366,80 @@ def end_label_chart(df, base, height, ysuffix, ytitle, fmt, gap_frac, lab, yrang
     if yrange:
         fig.update_yaxes(range=yrange)
     return fig, finals, colors
+
+
+@st.cache_data(show_spinner=False, ttl=1800)
+def get_news(region: str, days: int, token: int):
+    return eng.fetch_news(region, days=days)
+
+
+def _ago(ts):
+    from datetime import datetime, timezone
+    mins = int((datetime.now(timezone.utc) - ts).total_seconds() // 60)
+    if mins < 60:
+        return f"{max(mins, 1)} min ago"
+    if mins < 1440:
+        return f"{mins // 60} h ago"
+    return f"{mins // 1440} d ago"
+
+
+TOPIC_ICON = {"Central banks & rates": "🏦", "Inflation & macro data": "📊", "Oil & commodities": "🛢️",
+              "Currency": "💱", "Earnings & corporate": "🏢", "Fund flows": "💸", "Policy & geopolitics": "🌐",
+              "Market moves": "📈"}
+
+
+if view == "📰 Market news":
+    st.subheader("Market-moving news")
+    st.caption("Headlines from free news feeds (Google News, Economic Times, Moneycontrol, LiveMint, Business Standard, "
+               "CNBC, MarketWatch, Yahoo Finance), filtered to market-relevant stories and tagged by theme. "
+               "Refreshed every 30 minutes; click a headline to read the full article on the publisher's site.")
+    n1, n2, n3, n4 = st.columns([1.2, 2.4, 1.6, 1])
+    days = n1.slider("Last N days", 1, 7, 7, key="nw_days")
+    topics = n2.multiselect("Themes", list(eng.NEWS_TOPICS), key="nw_topics", placeholder="All themes")
+    q = n3.text_input("Search headlines", key="nw_q", placeholder="e.g. RBI, crude, Nvidia")
+    if n4.button("🔄 Refresh news", width='stretch'):
+        st.session_state["nw_tok"] = st.session_state.get("nw_tok", 0) + 1
+        get_news.clear()
+    sort_by = st.radio("Sort", ["Newest first", "Most relevant first"], horizontal=True, key="nw_sort")
+    max_items = st.select_slider("Headlines per section", [20, 40, 60, 100], value=40, key="nw_max")
+
+    def render(region, col, flag):
+        with col:
+            st.markdown(f"### {flag} {region}")
+            with st.spinner(f"Loading {region} news..."):
+                df, errs = get_news(region, days, st.session_state.get("nw_tok", 0))
+            if not df.empty:
+                if topics:
+                    df = df[df.tags.apply(lambda tg: any(t in tg for t in topics))]
+                if q:
+                    ql = q.lower()
+                    df = df[df.apply(lambda r: ql in f"{r.title} {r.summary}".lower(), axis=1)]
+                if sort_by.startswith("Most"):
+                    df = df.sort_values(["score", "published"], ascending=False)
+            if df.empty:
+                st.info("No matching headlines." + (" Some feeds could not be reached - see below." if errs else ""))
+            else:
+                cnt = pd.Series([t for tg in df.tags for t in tg]).value_counts()
+                st.caption(f"{len(df)} headlines · " + " · ".join(f"{TOPIC_ICON.get(k, '')} {k} {v}"
+                                                                 for k, v in cnt.head(4).items()))
+                box = st.container(height=900)
+                for r in df.head(max_items).itertuples():
+                    icons = " ".join(TOPIC_ICON.get(t, "") for t in r.tags[:3])
+                    title = r.title.replace("[", "(").replace("]", ")")
+                    box.markdown(f"**[{title}]({r.link})**  \n"
+                                 f"<span style='color:gray;font-size:0.85em'>{r.source} · "
+                                 f"{r.published.strftime('%d %b %H:%M')} UTC · {_ago(r.published)} · {icons} "
+                                 f"{', '.join(r.tags[:3])}</span>", unsafe_allow_html=True)
+            if errs:
+                with st.expander(f"Feed issues ({len(errs)})"):
+                    for e_ in errs:
+                        st.caption(e_)
+
+    left, right = st.columns(2, gap="large")
+    render("India", left, "🇮🇳")
+    render("Global", right, "🌍")
+    st.caption("Headlines are shown as published by each source; this is information, not investment advice.")
+    st.stop()
 
 
 @st.cache_data(show_spinner=False)

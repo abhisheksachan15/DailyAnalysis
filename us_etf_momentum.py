@@ -629,6 +629,156 @@ def india_etf_table(lst, close, vol, cfg):
     return pd.DataFrame(rows)
 
 
+# --------------------------------------------------------------------------
+# Market news (free RSS feeds, no API key): India and Global, last N days
+# --------------------------------------------------------------------------
+def _gnews(query, region):
+    from urllib.parse import quote
+    return (f"https://news.google.com/rss/search?q={quote(query + ' when:7d')}"
+            f"&hl=en-{region}&gl={region}&ceid={region}:en")
+
+
+NEWS_FEEDS = {
+    "India": [
+        ("Google News: Indian markets",
+         _gnews('Sensex OR Nifty OR "Indian stock market" OR "Dalal Street" OR "Indian equities"', "IN")),
+        ("Google News: RBI, economy & flows",
+         _gnews('RBI OR "repo rate" OR "India inflation" OR "India GDP" OR FII OR FPI OR rupee OR SEBI', "IN")),
+        ("Economic Times: Markets", "https://economictimes.indiatimes.com/markets/rssfeeds/1977021501.cms"),
+        ("Moneycontrol: Market reports", "https://www.moneycontrol.com/rss/marketreports.xml"),
+        ("LiveMint: Markets", "https://www.livemint.com/rss/markets"),
+        ("Business Standard: Markets", "https://www.business-standard.com/rss/markets-106.rss"),
+    ],
+    "Global": [
+        ("Google News: Global markets",
+         _gnews('"stock market" OR "Wall Street" OR "S&P 500" OR Nasdaq OR "global markets" OR "world stocks"', "US")),
+        ("Google News: Fed, rates, oil & trade",
+         _gnews('"Federal Reserve" OR "Treasury yields" OR "interest rates" OR "crude oil" OR tariffs OR ECB', "US")),
+        ("CNBC: Top news", "https://www.cnbc.com/id/100003114/device/rss/rss.html"),
+        ("CNBC: Finance", "https://www.cnbc.com/id/10000664/device/rss/rss.html"),
+        ("MarketWatch: Top stories", "https://feeds.content.dowjones.io/public/rss/mw_topstories"),
+        ("Yahoo Finance", "https://finance.yahoo.com/news/rssindex"),
+    ],
+}
+
+NEWS_TOPICS = {
+    "Central banks & rates": ["rbi", "repo", "fed ", "federal reserve", "fomc", "powell", "ecb", "boj", "bank of japan",
+                              "rate cut", "rate hike", "interest rate", "monetary policy", "mpc", "yield", "bond"],
+    "Inflation & macro data": ["inflation", "cpi", "wpi", "gdp", "jobs", "payroll", "unemployment", "pmi", "iip",
+                               "retail sales", "recession", "growth", "fiscal", "deficit"],
+    "Oil & commodities": ["crude", "oil", "brent", "opec", "gold", "silver", "copper", "commodit", "natural gas"],
+    "Currency": ["rupee", "dollar", "dxy", "yen", "yuan", "euro", "forex", "currency"],
+    "Earnings & corporate": ["earnings", "results", "quarter", "q1", "q2", "q3", "q4", "profit", "revenue", "guidance",
+                             "ipo", "merger", "acquisition", "buyback", "dividend"],
+    "Fund flows": ["fii", "fpi", "dii", "inflow", "outflow", "foreign investor", "mutual fund", "sip", "etf"],
+    "Policy & geopolitics": ["tariff", "trade war", "trade deal", "sanction", "war", "election", "budget", "gst",
+                             "sebi", "regulat", "government", "geopolit", "china", "russia", "ukraine", "middle east",
+                             "israel", "iran"],
+    "Market moves": ["sensex", "nifty", "s&p", "nasdaq", "dow", "stocks", "shares", "equities", "market", "rally",
+                     "sell-off", "selloff", "crash", "record high", "slump", "surge", "volatility", "vix"],
+}
+
+
+def _news_text(el, tag):
+    x = el.find(tag)
+    return (x.text or "").strip() if x is not None and x.text else ""
+
+
+def parse_feed(xml_bytes, feed_name):
+    """Parse RSS 2.0 or Atom bytes into a list of dicts: title, link, source, published (UTC), summary."""
+    import html
+    import re
+    import xml.etree.ElementTree as ET
+    from email.utils import parsedate_to_datetime
+    out = []
+    try:
+        root = ET.fromstring(xml_bytes)
+    except ET.ParseError:
+        return out
+    ns = {"a": "http://www.w3.org/2005/Atom"}
+    items = root.findall(".//item") or root.findall(".//a:entry", ns)
+    for it in items:
+        title = _news_text(it, "title") or _news_text(it, "{http://www.w3.org/2005/Atom}title")
+        link = _news_text(it, "link")
+        if not link:
+            le = it.find("{http://www.w3.org/2005/Atom}link")
+            link = le.get("href", "") if le is not None else ""
+        src_el = it.find("source")
+        source = (src_el.text or "").strip() if src_el is not None and src_el.text else ""
+        when = (_news_text(it, "pubDate") or _news_text(it, "{http://www.w3.org/2005/Atom}updated")
+                or _news_text(it, "{http://www.w3.org/2005/Atom}published"))
+        try:
+            ts = parsedate_to_datetime(when)
+        except Exception:
+            ts = pd.to_datetime(when, utc=True, errors="coerce")
+            ts = None if pd.isna(ts) else ts.to_pydatetime()
+        if ts is None:
+            continue
+        if ts.tzinfo is None:
+            from datetime import timezone
+            ts = ts.replace(tzinfo=timezone.utc)
+        desc = _news_text(it, "description") or _news_text(it, "{http://www.w3.org/2005/Atom}summary")
+        desc = re.sub(r"<[^>]+>", " ", html.unescape(desc))
+        desc = re.sub(r"\s+", " ", desc).strip()
+        title = html.unescape(title)
+        if source and title.endswith(f" - {source}"):          # Google News appends " - Source"
+            title = title[: -len(source) - 3]
+        if not source:
+            source = feed_name.split(":")[0]
+        if title and link:
+            out.append({"title": title, "link": link, "source": source, "published": ts,
+                        "summary": desc[:300], "feed": feed_name})
+    return out
+
+
+_TOPIC_RX = None
+
+
+def tag_news(text):
+    """Theme tags + relevance score. Short keywords match whole words only (so 'war' != 'software')."""
+    import re
+    global _TOPIC_RX
+    if _TOPIC_RX is None:
+        _TOPIC_RX = {topic: [re.compile(r"\b" + re.escape(k.strip()) + (r"\b" if len(k.strip()) <= 4 else ""))
+                             for k in keys] for topic, keys in NEWS_TOPICS.items()}
+    t = text.lower()
+    hits = {topic: sum(1 for rx in rxs if rx.search(t)) for topic, rxs in _TOPIC_RX.items()}
+    return [k for k, v in hits.items() if v], sum(hits.values())
+
+
+def fetch_news(region, days=7, timeout=15, fetcher=None):
+    """Latest market-relevant news for 'India' or 'Global'. Returns (DataFrame, errors)."""
+    import re
+    import urllib.request
+    from datetime import datetime, timedelta, timezone
+    rows, errors = [], []
+    for name, url in NEWS_FEEDS[region]:
+        try:
+            if fetcher:
+                raw = fetcher(url)
+            else:
+                req = urllib.request.Request(url, headers=_UA)
+                raw = urllib.request.urlopen(req, timeout=timeout).read()
+            got = parse_feed(raw, name)
+            if not got:
+                errors.append(f"{name}: no items")
+            rows.extend(got)
+        except Exception as e:
+            errors.append(f"{name}: {e}")
+    if not rows:
+        return pd.DataFrame(columns=["title", "link", "source", "published", "summary", "feed", "tags", "score"]), errors
+    df = pd.DataFrame(rows)
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    df = df[df.published >= cutoff]
+    tg = [tag_news(f"{a} {b}") for a, b in zip(df.title, df.summary)]
+    df["tags"] = [x[0] for x in tg]
+    df["score"] = [x[1] for x in tg]
+    df = df[df.score > 0]                                       # keep only market-relevant items
+    df["key"] = [re.sub(r"[^a-z0-9]", "", t.lower())[:70] for t in df.title]
+    df = df.sort_values("published", ascending=False).drop_duplicates("key").drop(columns="key")
+    return df.reset_index(drop=True), errors
+
+
 def global_name(sym):
     for grp in GLOBAL_CATALOG.values():
         if sym in grp:
