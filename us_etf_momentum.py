@@ -161,12 +161,45 @@ PROFILES = {
         names={t: v[2] for t, v in INDIA_ETFS.items()},
         cash="LIQUIDCASE.NS", cash_fallback=None, benchmark="NIFTYBEES.NS", bond="LTGILTBEES.NS",
         gold_silver=("GOLDBEES.NS", "SILVERBEES.NS"), to_usd=False, currency="₹",
-        default_start="2015-01-01"),
+        default_start="2015-01-01", bench_name="NIFTYBEES"),
 }
 for _p in PROFILES.values():
     _p.setdefault("currency", "$")
     _p.setdefault("default_start", "2007-01-01")
 PROFILES["ireland"]["default_start"] = "2011-01-01"
+
+# Indian INDEX strategy: broad-market, size and factor (smart-beta) index ETFs instead of sectors.
+# Gold, silver, gilts and Nasdaq are included as optional diversifiers (exclude them in the app if you
+# want a pure equity-index rotation). Benchmark = Nifty 500 index (^CRSLDX), so NIFTYBEES can be picked.
+INDIA_INDEX_ETFS = {
+    "NIFTYBEES.NS": ("Index", "Large Cap", "Nippon Nifty 50 BeES"),
+    "NIF100BEES.NS": ("Index", "Large Cap", "Nippon Nifty 100 BeES"),
+    "JUNIORBEES.NS": ("Index", "Next 50", "Nippon Nifty Next 50 Junior BeES"),
+    "MONIFTY500.NS": ("Index", "Broad Market", "Motilal Oswal Nifty 500"),
+    "MID150BEES.NS": ("Index", "Mid Cap", "Nippon Nifty Midcap 150"),
+    "MOM100.NS": ("Index", "Mid Cap", "Motilal Oswal Nifty Midcap 100"),
+    "MIDSELIETF.NS": ("Index", "Mid Cap", "ICICI Pru Nifty Midcap Select"),
+    "HDFCSML250.NS": ("Index", "Small Cap", "HDFC Nifty Smallcap 250"),
+    "MOM30IETF.NS": ("Factor", "Momentum", "ICICI Pru Nifty200 Momentum 30"),
+    "ALPHA.NS": ("Factor", "Momentum", "Kotak Nifty Alpha 50"),
+    "LOWVOLIETF.NS": ("Factor", "Low Volatility", "ICICI Pru Nifty 100 Low Vol 30"),
+    "ALPL30IETF.NS": ("Factor", "Low Volatility", "ICICI Pru Nifty Alpha Low-Vol 30"),
+    "QUAL30IETF.NS": ("Factor", "Quality / Value / Dividend", "ICICI Pru Nifty200 Quality 30"),
+    "NV20IETF.NS": ("Factor", "Quality / Value / Dividend", "ICICI Pru Nifty50 Value 20"),
+    "DIVOPPBEES.NS": ("Factor", "Quality / Value / Dividend", "Nippon Nifty Dividend Opportunities 50"),
+    "GOLDBEES.NS": ("Diversifier", "Gold & Silver", "Nippon Gold BeES"),
+    "SILVERBEES.NS": ("Diversifier", "Gold & Silver", "Nippon Silver BeES"),
+    "LTGILTBEES.NS": ("Diversifier", "Gilts", "Nippon Nifty 8-13yr G-Sec"),
+    "MON100.NS": ("Diversifier", "US Equity", "Motilal Oswal Nasdaq 100"),
+}
+PROFILES["india_index"] = dict(
+    label="Indian index ETFs (NSE) - broad & factor indices",
+    universe={t: v[0] for t, v in INDIA_INDEX_ETFS.items()},
+    category={t: v[1] for t, v in INDIA_INDEX_ETFS.items()},
+    names={t: v[2] for t, v in INDIA_INDEX_ETFS.items()},
+    cash="LIQUIDCASE.NS", cash_fallback=None, benchmark="^CRSLDX", bond="LTGILTBEES.NS",
+    gold_silver=("GOLDBEES.NS", "SILVERBEES.NS"), to_usd=False, currency="₹",
+    default_start="2015-01-01", bench_name="NIFTY 500")
 CCY = "$"
 PROFILE = "us"
 NAMES = {}
@@ -188,8 +221,12 @@ def set_profile(name):
     _apply_custom()
 
 
+def bench_name():
+    return PROFILES[PROFILE].get("bench_name", BENCHMARK)
+
+
 def bench_label():
-    return f"{BENCHMARK} buy & hold"
+    return f"{bench_name()} buy & hold"
 
 
 def cash_series(close):
@@ -1065,7 +1102,7 @@ def benchmarks(close, eq_index, capital):
             if d.month != month:          # monthly rebalance back to 60/40
                 hold, month = w * val, d.month
             vals.append(val)
-        out[f"60/40 {BENCHMARK}/{BOND_FOR_6040}"] = pd.Series(vals, index=eq_index)
+        out[f"60/40 {bench_name()}/{BOND_FOR_6040}"] = pd.Series(vals, index=eq_index)
     return out
 
 
